@@ -7,7 +7,7 @@ import Razorpay from "razorpay";
 import crypto from "crypto";
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 app.use(express.json());
 
@@ -699,7 +699,7 @@ app.get("/api/rooms/:id/stream", (req, res) => {
 
 // Full-stack Vite & static asset serving
 async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
+  if (process.env.NODE_ENV === "development") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",

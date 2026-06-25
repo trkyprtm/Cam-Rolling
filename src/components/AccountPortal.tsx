@@ -6,6 +6,15 @@ import {
   Lock, Mail, Phone, User, LogOut, Sparkles, Check
 } from "lucide-react";
 import { UPIQRCode } from "./UPIQRCode";
+import { 
+  auth, 
+  googleProvider, 
+  signInWithPopup, 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword,
+  updateProfile,
+  signOut
+} from "../firebase";
 
 interface UserSubscription {
   active: boolean;
@@ -80,36 +89,7 @@ export function AccountPortal({
   const [isProcessing, setIsProcessing] = useState(false);
   const [showInvoiceText, setShowInvoiceText] = useState("");
 
-  // Seed default registered users in localStorage for seamless logins
-  useEffect(() => {
-    const saved = localStorage.getItem("camrolling_registered_users");
-    if (!saved) {
-      const defaultUsers = [
-        {
-          name: "Cinema Connoisseur",
-          mobile: "9876543210",
-          email: "admin@camrolling.com",
-          password: "password123",
-          subscription: null
-        },
-        {
-          name: "VIP Guest",
-          mobile: "9123456789",
-          email: "premium@camrolling.com",
-          password: "password123",
-          subscription: {
-            active: true,
-            limit: 4,
-            planName: "4 Spectators Suite",
-            priceINR: 39,
-            paymentDate: Date.now(),
-            invoiceId: "INV-DEMO77"
-          }
-        }
-      ];
-      localStorage.setItem("camrolling_registered_users", JSON.stringify(defaultUsers));
-    }
-  }, []);
+  // Seeding removed - Only genuine registrations permitted
 
   if (!isOpen) return null;
 
@@ -139,55 +119,61 @@ export function AccountPortal({
   };
 
   // Sign In submit handler
-  const handleSignInSubmit = (e: React.FormEvent) => {
+  const handleSignInSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg("");
-    
-    const usersStr = localStorage.getItem("camrolling_registered_users") || "[]";
-    const usersList = JSON.parse(usersStr);
+    setSuccessMsg("");
+    setIsProcessing(true);
 
-    const match = usersList.find((u: any) => {
-      if (credentialType === "email") {
-        return u.email.toLowerCase() === loginEmail.trim().toLowerCase() && u.password === loginPassword;
-      } else {
-        return u.mobile.replace(/\D/g, "") === loginMobile.replace(/\D/g, "") && u.password === loginPassword;
-      }
-    });
+    if (credentialType === "mobile") {
+      setErrorMsg("Real mobile OTP authentication is not available in the sandbox. Please use 'Use Email ID' or 'Sign In with Google' for genuine authentication.");
+      setIsProcessing(false);
+      return;
+    }
 
-    if (match) {
+    try {
+      const userCredential = await signInWithEmailAndPassword(auth, loginEmail.trim(), loginPassword);
+      const firebaseUser = userCredential.user;
+
+      // Check for subscription in local database
+      const usersStr = localStorage.getItem("camrolling_registered_users") || "[]";
+      const usersList = JSON.parse(usersStr);
+      const match = usersList.find((u: any) => u.email.toLowerCase() === firebaseUser.email?.toLowerCase());
+
       const profile: UserProfile = {
-        name: match.name,
-        mobile: match.mobile,
-        email: match.email,
-        subscription: match.subscription || null
+        name: firebaseUser.displayName || match?.name || firebaseUser.email?.split("@")[0] || "Spectator",
+        mobile: match?.mobile || "",
+        email: firebaseUser.email || "",
+        subscription: match?.subscription || null
       };
+
       onLoginSuccess(profile);
-      setSuccessMsg(`Welcome back, ${match.name}!`);
+      setSuccessMsg(`Welcome back, ${profile.name}!`);
       setTimeout(() => setSuccessMsg(""), 3000);
-    } else {
-      setErrorMsg("No matching user found with those credentials. Feel free to use the quick-fill test details below, or create a brand-new account!");
+    } catch (err: any) {
+      console.error(err);
+      let friendlyMessage = err.message;
+      if (err.code === "auth/user-not-found" || err.code === "auth/wrong-password" || err.code === "auth/invalid-credential") {
+        friendlyMessage = "Incorrect Email ID or Password. Please verify your credentials or create a brand-new account!";
+      } else if (err.code === "auth/invalid-email") {
+        friendlyMessage = "Please enter a valid Email ID format.";
+      }
+      setErrorMsg(friendlyMessage);
+    } finally {
+      setIsProcessing(false);
     }
   };
 
-  // Quick fill tester helper
-  const handleQuickFill = (email: string) => {
-    setErrorMsg("");
-    setCredentialType("email");
-    setLoginEmail(email);
-    setLoginPassword("password123");
-  };
+  // Quick fill helper removed to enforce strict genuine logins only
 
-  // Sign Up / Account Creation handler - Initiates OTP
-  const handleSignUpSubmit = (e: React.FormEvent) => {
+  // Sign Up / Account Creation handler - Genuine Firebase registration
+  const handleSignUpSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg("");
+    setSuccessMsg("");
 
     if (signUpName.trim().length < 2) {
       setErrorMsg("Please enter a valid Name (minimum 2 characters).");
-      return;
-    }
-    if (signUpMobile.replace(/\D/g, "").length < 10) {
-      setErrorMsg("Please enter a valid 10-digit Mobile number.");
       return;
     }
     const emailRegex = /^[\w.-]+@[\w.-]+\.\w+$/;
@@ -195,34 +181,58 @@ export function AccountPortal({
       setErrorMsg("Please enter a valid Email address.");
       return;
     }
-    if (signUpPassword.length < 5) {
-      setErrorMsg("Password must be at least 5 characters long.");
+    if (signUpPassword.length < 6) {
+      setErrorMsg("Password must be at least 6 characters long for security.");
       return;
     }
 
-    const usersStr = localStorage.getItem("camrolling_registered_users") || "[]";
-    const usersList = JSON.parse(usersStr);
+    setIsProcessing(true);
 
-    // Check for existing
-    const exists = usersList.some(
-      (u: any) => u.email.toLowerCase() === signUpEmail.trim().toLowerCase() || u.mobile === signUpMobile.trim()
-    );
+    try {
+      const userCredential = await createUserWithEmailAndPassword(auth, signUpEmail.trim(), signUpPassword);
+      const firebaseUser = userCredential.user;
 
-    if (exists) {
-      setErrorMsg("An account with this Email or Mobile number already exists!");
-      return;
+      await updateProfile(firebaseUser, {
+        displayName: signUpName.trim()
+      });
+
+      const usersStr = localStorage.getItem("camrolling_registered_users") || "[]";
+      const usersList = JSON.parse(usersStr);
+      const newUser = {
+        name: signUpName.trim(),
+        mobile: signUpMobile.trim(),
+        email: signUpEmail.trim().toLowerCase(),
+        password: signUpPassword,
+        subscription: null
+      };
+      usersList.push(newUser);
+      localStorage.setItem("camrolling_registered_users", JSON.stringify(usersList));
+
+      const profile: UserProfile = {
+        name: signUpName.trim(),
+        mobile: signUpMobile.trim(),
+        email: signUpEmail.trim().toLowerCase(),
+        subscription: null
+      };
+
+      onLoginSuccess(profile);
+      setSuccessMsg(`Account created and profile prepared! Welcome, ${profile.name}!`);
+      setTimeout(() => setSuccessMsg(""), 3000);
+    } catch (err: any) {
+      console.error(err);
+      let friendlyMessage = err.message;
+      if (err.code === "auth/email-already-in-use") {
+        friendlyMessage = "An account with this Email ID already exists. Try signing in instead!";
+      } else if (err.code === "auth/weak-password") {
+        friendlyMessage = "The password is too weak. Please use at least 6 characters.";
+      }
+      setErrorMsg(friendlyMessage);
+    } finally {
+      setIsProcessing(false);
     }
-
-    // Generate simulated random 4-digit security OTP
-    const randomOtp = Math.floor(1000 + Math.random() * 9000).toString();
-    setGeneratedOtp(randomOtp);
-    setEnteredOtp("");
-    setIsOtpView(true);
-    setSuccessMsg(`Simulated secure OTP dispatch: ${randomOtp}`);
-    setTimeout(() => setSuccessMsg(""), 5000);
   };
 
-  // Resend OTP handler
+  // Resend OTP handler - (Retained legacy mock if needed, but not used in the direct flow)
   const handleResendOtp = () => {
     const randomOtp = Math.floor(1000 + Math.random() * 9000).toString();
     setGeneratedOtp(randomOtp);
@@ -231,7 +241,7 @@ export function AccountPortal({
     setTimeout(() => setSuccessMsg(""), 5000);
   };
 
-  // Confirm OTP and complete registration
+  // Confirm OTP and complete registration - (Retained legacy mock if needed)
   const handleOtpVerifySubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg("");
@@ -268,31 +278,57 @@ export function AccountPortal({
     setTimeout(() => setSuccessMsg(""), 3000);
   };
 
-  // Google Simulation Sign In
-  const handleGoogleSignIn = () => {
+  // Genuine Google Sign-In handler
+  const handleGoogleSignIn = async () => {
     setErrorMsg("");
+    setSuccessMsg("");
     setIsProcessing(true);
-    setTimeout(() => {
-      const googleUser = {
-        name: "Google Spectator",
-        mobile: "+91 9900990099",
-        email: "google.user@gmail.com",
-        subscription: null
-      };
-      
-      // Add to registered if not there
+
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      const firebaseUser = result.user;
+
       const usersStr = localStorage.getItem("camrolling_registered_users") || "[]";
       const usersList = JSON.parse(usersStr);
-      if (!usersList.some((u: any) => u.email === googleUser.email)) {
-        usersList.push({ ...googleUser, password: "google-auth-bypass" });
+      const match = usersList.find((u: any) => u.email.toLowerCase() === firebaseUser.email?.toLowerCase());
+
+      const profile: UserProfile = {
+        name: firebaseUser.displayName || "Google Spectator",
+        mobile: firebaseUser.phoneNumber || match?.mobile || "",
+        email: firebaseUser.email || "",
+        subscription: match?.subscription || null
+      };
+
+      if (!usersList.some((u: any) => u.email.toLowerCase() === profile.email.toLowerCase())) {
+        usersList.push({
+          name: profile.name,
+          mobile: profile.mobile,
+          email: profile.email,
+          password: "google-authenticated",
+          subscription: null
+        });
         localStorage.setItem("camrolling_registered_users", JSON.stringify(usersList));
       }
 
-      onLoginSuccess(googleUser);
-      setIsProcessing(false);
-      setSuccessMsg("Logged in with Google securely!");
+      onLoginSuccess(profile);
+      setSuccessMsg("Successfully authenticated with your Google Account!");
       setTimeout(() => setSuccessMsg(""), 3000);
-    }, 1000);
+    } catch (err: any) {
+      console.error(err);
+      let friendlyMessage = err.message;
+      if (err.code === "auth/popup-blocked") {
+        friendlyMessage = "Google sign-in window was blocked by your browser's popup blocker. Please allow popups for this site or open the app in a new tab!";
+      } else if (err.code === "auth/popup-closed-by-user") {
+        friendlyMessage = "The Google login window was closed before sign-in completed. This happens if you close the login popup, have third-party cookies disabled, or if the current domain is not added to your Firebase Authorized Domains.";
+      } else if (err.code === "auth/unauthorized-domain") {
+        friendlyMessage = `This domain (${window.location.hostname}) is not authorized for Google Sign-In in your Firebase project. Please add it to the Authorized Domains list in Firebase console > Authentication > Settings.`;
+      } else if (err.code === "auth/cancelled-popup-request") {
+        friendlyMessage = "Authentication request was cancelled. Please try again.";
+      }
+      setErrorMsg(friendlyMessage);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   // Buy/Upgrade Subscription handler
@@ -409,6 +445,15 @@ TOTAL PAID:       INR ${totalAmount.toFixed(2)}
       link.click();
       document.body.removeChild(link);
     }, 1500);
+  };
+
+  const handleLogoutClick = async () => {
+    try {
+      await signOut(auth);
+    } catch (err) {
+      console.error("Firebase signout error:", err);
+    }
+    onLogout();
   };
 
   return (
@@ -617,30 +662,7 @@ TOTAL PAID:       INR ${totalAmount.toFixed(2)}
                     </div>
                   )}
 
-                  {/* Footnote showing default credentials */}
-                  <div className="mt-4 pt-4 border-t border-white/5 flex flex-col gap-2 bg-[#050505] p-3 rounded-2xl border border-white/5">
-                    <span className="text-[9.5px] font-mono text-neutral-400 uppercase tracking-wider font-bold block">
-                      💡 Quick-Fill Test Credentials
-                    </span>
-                    <div className="grid grid-cols-2 gap-2 text-[10px]">
-                      <button
-                        type="button"
-                        onClick={() => handleQuickFill("admin@camrolling.com")}
-                        className="p-2 bg-neutral-900 border border-white/5 hover:border-gold/30 rounded-lg text-left hover:text-white transition-all"
-                      >
-                        <span className="text-gold font-bold block">Free Tester</span>
-                        <span className="text-[9px] text-neutral-500 block font-mono">admin@camrolling.com</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleQuickFill("premium@camrolling.com")}
-                        className="p-2 bg-neutral-900 border border-white/5 hover:border-gold/30 rounded-lg text-left hover:text-white transition-all"
-                      >
-                        <span className="text-green-400 font-bold block">VIP Premium User</span>
-                        <span className="text-[9px] text-neutral-500 block font-mono">premium@camrolling.com</span>
-                      </button>
-                    </div>
-                  </div>
+                  {/* Quick-fill credentials removed to enforce strict genuine logins only */}
 
                 </div>
               ) : isOtpView ? (
@@ -821,7 +843,7 @@ TOTAL PAID:       INR ${totalAmount.toFixed(2)}
 
                 <div className="mt-4 pt-3.5 border-t border-white/5 flex justify-end">
                   <button
-                    onClick={onLogout}
+                    onClick={handleLogoutClick}
                     className="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all cursor-pointer active:scale-95"
                   >
                     <LogOut className="w-3 h-3" />
