@@ -1,0 +1,8 @@
+{
+  "name": "CamRolling",
+  "description": "A real-time co-watching cinema theater where friends and family can watch YouTube videos synchronously and talk together with live seat positioning, chat, and animated reactions.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
