@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from "react";
 import { 
   Film, Ticket, Copy, Check, LogOut, ArrowRight, Video, 
   Lightbulb, LightbulbOff, HelpCircle, Shuffle, ChevronRight, Play,
-  Mic, MicOff, Volume2, VolumeX, QrCode, CreditCard, Menu, CheckCircle
+  Mic, MicOff, Volume2, VolumeX, QrCode, CreditCard, Menu, CheckCircle,
+  AlertCircle
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { RoomState } from "./types";
@@ -12,6 +13,7 @@ import { ChatSidebar } from "./components/ChatSidebar";
 import { YouTubePreviewCard } from "./components/YouTubePreviewCard";
 import { useVoiceChat } from "./hooks/useVoiceChat";
 import { AccountPortal, UserProfile } from "./components/AccountPortal";
+import { auth, getRedirectResult } from "./firebase";
 const camrollingLogo = "/src/assets/images/camrolling_icon_notext_1782329632171.jpg";
 
 const createPlanNames: Record<number, string> = {
@@ -82,6 +84,45 @@ export default function App() {
       setJoinRoomIdInput(code);
       setActiveTab("join");
     }
+  }, []);
+
+  // 1.5. Handle Firebase Google Sign-In redirect result
+  useEffect(() => {
+    getRedirectResult(auth)
+      .then((result) => {
+        if (result) {
+          const firebaseUser = result.user;
+          const usersStr = localStorage.getItem("camrolling_registered_users") || "[]";
+          const usersList = JSON.parse(usersStr);
+          const match = usersList.find((u: any) => u.email.toLowerCase() === firebaseUser.email?.toLowerCase());
+
+          const profile: UserProfile = {
+            name: firebaseUser.displayName || "Google Spectator",
+            mobile: firebaseUser.phoneNumber || match?.mobile || "",
+            email: firebaseUser.email || "",
+            subscription: match?.subscription || null
+          };
+
+          if (!usersList.some((u: any) => u.email.toLowerCase() === profile.email.toLowerCase())) {
+            usersList.push({
+              name: profile.name,
+              mobile: profile.mobile,
+              email: profile.email,
+              password: "google-authenticated",
+              subscription: null
+            });
+            localStorage.setItem("camrolling_registered_users", JSON.stringify(usersList));
+          }
+
+          setCurrentUser(profile);
+          localStorage.setItem("camrolling_user", JSON.stringify(profile));
+          setIsAccountOpen(true);
+        }
+      })
+      .catch((err: any) => {
+        console.error("Firebase Redirect auth error: ", err);
+        setErrorMessage("Google Sign-In Redirect failed: " + err.message);
+      });
   }, []);
 
   // 2. SSE subscription manager when roomId and memberId are active
@@ -407,9 +448,70 @@ export default function App() {
               <motion.div 
                 initial={{ opacity: 0, y: -10 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="p-4 rounded-2xl bg-red-500/10 border border-red-500/20 text-xs text-red-400 text-center font-mono leading-relaxed"
+                className="w-full max-w-md mx-auto"
               >
-                {errorMessage}
+                {errorMessage.includes("unauthorized-domain") ? (
+                  <div className="p-5 rounded-2xl bg-red-950/40 border border-red-500/30 text-left flex flex-col gap-3">
+                    <div className="flex items-center gap-2 text-red-400">
+                      <AlertCircle className="w-5 h-5 shrink-0" />
+                      <span className="text-xs font-bold uppercase tracking-wider font-mono">Firebase Domain Authorization Required</span>
+                    </div>
+                    
+                    <p className="text-[11px] text-neutral-300 leading-relaxed">
+                      Google Sign-In failed because <span className="text-white font-mono bg-white/10 px-1.5 py-0.5 rounded break-all">{window.location.hostname}</span> has not been authorized in your Firebase console.
+                    </p>
+
+                    <div className="bg-black/50 p-3 rounded-xl border border-white/5 flex flex-col gap-2">
+                      <div className="flex justify-between items-center gap-2">
+                        <span className="text-[10px] text-neutral-400 font-mono">Your App Domain:</span>
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(window.location.hostname);
+                            alert("Copied domain name to clipboard: " + window.location.hostname);
+                          }}
+                          className="px-2.5 py-1 bg-white/10 hover:bg-white/25 text-white rounded text-[10px] font-mono transition-all active:scale-95 cursor-pointer"
+                        >
+                          Copy Domain
+                        </button>
+                      </div>
+                      <div className="text-xs text-white font-mono bg-black/40 px-2 py-1.5 rounded select-all break-all border border-white/5">
+                        {window.location.hostname}
+                      </div>
+                    </div>
+
+                    <div className="text-[11px] text-neutral-400 leading-relaxed space-y-1.5 border-t border-white/5 pt-3">
+                      <span className="text-amber-400 font-bold text-[11px] block">To fix this in your Firebase Console:</span>
+                      <ol className="list-decimal pl-4 space-y-1 text-[10px]">
+                        <li>Open the <a href="https://console.firebase.google.com/" target="_blank" rel="noopener noreferrer" className="text-gold underline hover:text-yellow-400">Firebase Console</a> and select your project.</li>
+                        <li>In the left sidebar, click on <strong className="text-white">Authentication</strong>.</li>
+                        <li>Click on the <strong className="text-white">Settings</strong> tab at the top.</li>
+                        <li>Select <strong className="text-white">Authorized domains</strong> from the settings list.</li>
+                        <li>Click <strong className="text-white">Add domain</strong>.</li>
+                        <li>Paste <span className="text-white font-mono bg-white/5 px-1 py-0.5 rounded">{window.location.hostname}</span> and click <strong className="text-white">Add</strong>.</li>
+                      </ol>
+                      <p className="text-[9px] text-neutral-500 italic mt-1">
+                        Once added, refresh this page and Google Sign-In will work perfectly on your Railway site!
+                      </p>
+                    </div>
+
+                    <button
+                      onClick={() => setErrorMessage("")}
+                      className="mt-2 w-full py-1.5 bg-white/5 hover:bg-white/15 text-neutral-400 hover:text-white rounded-lg text-[10px] uppercase tracking-wider font-bold transition-all cursor-pointer"
+                    >
+                      Dismiss Error
+                    </button>
+                  </div>
+                ) : (
+                  <div className="p-4 rounded-2xl bg-red-500/10 border border-red-500/20 text-xs text-red-400 text-center font-mono leading-relaxed relative">
+                    {errorMessage}
+                    <button 
+                      onClick={() => setErrorMessage("")}
+                      className="absolute top-1 right-2 text-neutral-500 hover:text-neutral-300 text-[10px] font-bold"
+                    >
+                      ×
+                    </button>
+                  </div>
+                )}
               </motion.div>
             )}
 

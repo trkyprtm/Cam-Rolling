@@ -10,10 +10,13 @@ import {
   auth, 
   googleProvider, 
   signInWithPopup, 
+  signInWithRedirect,
+  getRedirectResult,
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword,
   updateProfile,
-  signOut
+  signOut,
+  isUsingDefaultSandbox
 } from "../firebase";
 
 interface UserSubscription {
@@ -278,11 +281,23 @@ export function AccountPortal({
     setTimeout(() => setSuccessMsg(""), 3000);
   };
 
-  // Genuine Google Sign-In handler
-  const handleGoogleSignIn = async () => {
+  // Genuine Google Sign-In handler (supports popup with redirect fallback)
+  const handleGoogleSignIn = async (useRedirect: boolean = false) => {
     setErrorMsg("");
     setSuccessMsg("");
     setIsProcessing(true);
+
+    if (useRedirect) {
+      try {
+        setSuccessMsg("Redirecting to Google secure login page...");
+        await signInWithRedirect(auth, googleProvider);
+      } catch (err: any) {
+        console.error(err);
+        setErrorMsg("Redirect failed: " + err.message);
+        setIsProcessing(false);
+      }
+      return;
+    }
 
     try {
       const result = await signInWithPopup(auth, googleProvider);
@@ -316,10 +331,21 @@ export function AccountPortal({
     } catch (err: any) {
       console.error(err);
       let friendlyMessage = err.message;
-      if (err.code === "auth/popup-blocked") {
-        friendlyMessage = "Google sign-in window was blocked by your browser's popup blocker. Please allow popups for this site or open the app in a new tab!";
-      } else if (err.code === "auth/popup-closed-by-user") {
-        friendlyMessage = "The Google login window was closed before sign-in completed. This happens if you close the login popup, have third-party cookies disabled, or if the current domain is not added to your Firebase Authorized Domains.";
+      if (err.code === "auth/popup-blocked" || err.code === "auth/popup-closed-by-user") {
+        // Automatically attempt redirect fallback after notifying
+        friendlyMessage = "Popup was blocked or closed. Automatically redirecting to secure full-page Google sign-in instead...";
+        setErrorMsg(friendlyMessage);
+        setTimeout(async () => {
+          try {
+            await signInWithRedirect(auth, googleProvider);
+          } catch (redirectErr: any) {
+            setErrorMsg("Redirect sign-in failed: " + redirectErr.message);
+            setIsProcessing(false);
+          }
+        }, 2000);
+        return;
+      } else if (err.code === "auth/user-cancelled") {
+        friendlyMessage = "Google Sign-In was cancelled or access was denied. Please try again.";
       } else if (err.code === "auth/unauthorized-domain") {
         friendlyMessage = `This domain (${window.location.hostname}) is not authorized for Google Sign-In in your Firebase project. Please add it to the Authorized Domains list in Firebase console > Authentication > Settings.`;
       } else if (err.code === "auth/cancelled-popup-request") {
@@ -498,9 +524,57 @@ TOTAL PAID:       INR ${totalAmount.toFixed(2)}
         <div className="p-6 overflow-y-auto flex-1 flex flex-col gap-5">
           
           {errorMsg && (
-            <div className="p-3 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl text-xs flex gap-2 items-start leading-relaxed">
-              <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-              <span>{errorMsg}</span>
+            <div className="w-full flex flex-col gap-3">
+              {errorMsg.includes("unauthorized-domain") ? (
+                <div className="p-4 bg-red-950/40 border border-red-500/30 rounded-xl text-left flex flex-col gap-3">
+                  <div className="flex items-center gap-2 text-red-400">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span className="text-xs font-bold uppercase tracking-wider font-mono">Firebase Domain Authorization Required</span>
+                  </div>
+                  
+                  <p className="text-[11px] text-neutral-300 leading-relaxed">
+                    Google Sign-In is failing because <span className="text-white font-mono bg-white/10 px-1 py-0.5 rounded break-all">{window.location.hostname}</span> has not been authorized in your Firebase console.
+                  </p>
+
+                  <div className="bg-black/50 p-3 rounded-lg border border-white/5 flex flex-col gap-2">
+                    <div className="flex justify-between items-center gap-2">
+                      <span className="text-[10px] text-neutral-400 font-mono">Your App Domain:</span>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(window.location.hostname);
+                          alert("Copied domain name to clipboard: " + window.location.hostname);
+                        }}
+                        className="px-2 py-0.5 bg-white/10 hover:bg-white/25 text-white rounded text-[9px] font-mono transition-all active:scale-95 cursor-pointer"
+                      >
+                        Copy Domain
+                      </button>
+                    </div>
+                    <div className="text-[11px] text-white font-mono bg-black/40 px-2 py-1 rounded select-all break-all border border-white/5">
+                      {window.location.hostname}
+                    </div>
+                  </div>
+
+                  <div className="text-[10px] text-neutral-400 leading-relaxed space-y-1.5 border-t border-white/5 pt-3">
+                    <span className="text-amber-400 font-bold text-[10px] block">To fix this in your Firebase Console:</span>
+                    <ol className="list-decimal pl-4 space-y-1 text-[9.5px]">
+                      <li>Open the <a href="https://console.firebase.google.com/" target="_blank" rel="noopener noreferrer" className="text-gold underline hover:text-yellow-400">Firebase Console</a> and select your project.</li>
+                      <li>In the left sidebar, click on <strong className="text-white">Authentication</strong>.</li>
+                      <li>Click on the <strong className="text-white">Settings</strong> tab at the top.</li>
+                      <li>Select <strong className="text-white">Authorized domains</strong> from the settings list.</li>
+                      <li>Click <strong className="text-white">Add domain</strong>.</li>
+                      <li>Paste <span className="text-white font-mono bg-white/5 px-1 py-0.5 rounded">{window.location.hostname}</span> and click <strong className="text-white">Add</strong>.</li>
+                    </ol>
+                    <p className="text-[9px] text-neutral-500 italic mt-1">
+                      Once added, refresh this page and Google Sign-In will work perfectly on your custom domain!
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-3 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl text-xs flex gap-2 items-start leading-relaxed">
+                  <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                  <span>{errorMsg}</span>
+                </div>
+              )}
             </div>
           )}
 
@@ -652,13 +726,46 @@ TOTAL PAID:       INR ${totalAmount.toFixed(2)}
                       <p className="text-xs text-neutral-400 text-center max-w-xs">
                         Enjoy instantly synced watcher profiles by connecting your Google Account.
                       </p>
-                      <button
-                        onClick={handleGoogleSignIn}
-                        disabled={isProcessing}
-                        className="px-6 py-2.5 bg-white text-neutral-900 hover:bg-neutral-100 font-bold rounded-xl text-xs transition-all active:scale-95 cursor-pointer flex items-center gap-2 shadow-md"
-                      >
-                        {isProcessing ? "Connecting..." : "Continue with Google"}
-                      </button>
+                      <div className="flex flex-col gap-2.5 w-full px-6">
+                        <button
+                          onClick={() => handleGoogleSignIn(false)}
+                          disabled={isProcessing}
+                          className="w-full py-2.5 bg-white text-neutral-900 hover:bg-neutral-100 font-bold rounded-xl text-xs transition-all active:scale-95 cursor-pointer flex items-center justify-center gap-2 shadow-md"
+                        >
+                          {isProcessing ? "Connecting..." : "Continue with Google (Popup)"}
+                        </button>
+                        <button
+                          onClick={() => handleGoogleSignIn(true)}
+                          disabled={isProcessing}
+                          className="w-full py-2 bg-transparent text-neutral-400 hover:text-white hover:bg-white/5 border border-white/10 font-medium rounded-xl text-[11px] transition-all cursor-pointer flex items-center justify-center gap-2"
+                        >
+                          Use Google Redirect Mode (Backup)
+                        </button>
+                      </div>
+
+                      {(!window.location.hostname.includes("localhost") && 
+                        !window.location.hostname.includes("127.0.0.1") && 
+                        !window.location.hostname.includes(".run.app") && 
+                        isUsingDefaultSandbox) && (
+                        <div className="mx-6 p-4 bg-red-950/20 border border-red-500/20 rounded-xl text-left flex flex-col gap-2 mt-1">
+                          <div className="flex items-center gap-2 text-red-400">
+                            <AlertCircle className="w-4 h-4 shrink-0" />
+                            <span className="text-xs font-bold font-mono uppercase tracking-wider">Railway Auth Action Required</span>
+                          </div>
+                          <p className="text-[10px] text-neutral-300 leading-relaxed">
+                            You are running on <span className="text-white font-semibold">{window.location.hostname}</span>, but the app is still using the default sandbox Firebase project (<span className="text-white font-semibold">quirky-proton-4wjrd</span>).
+                          </p>
+                          <p className="text-[10px] text-neutral-400 leading-relaxed">
+                            Because the sandbox project cannot authorize your custom Railway domain, Google Sign-In will fail.
+                          </p>
+                          <div className="text-[9px] text-neutral-400 font-mono mt-1 pt-2 border-t border-white/5">
+                            <span className="text-gold font-bold uppercase block mb-1">To fix this in Railway:</span>
+                            1. Go to your Railway service's <span className="text-white">Variables</span> tab.<br />
+                            2. Add your own Firebase variables (e.g. <span className="text-white">VITE_FIREBASE_API_KEY</span>, <span className="text-white">VITE_FIREBASE_PROJECT_ID</span>, etc.) from your Firebase Console.<br />
+                            3. Redeploy your Railway app so it connects to your fully authorized Firebase project!
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
 
